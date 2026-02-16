@@ -9,6 +9,7 @@ import ContactInfo from './checkout/ContactInfo';
 import OrderSummary from './checkout/OrderSummary';
 import { useCheckoutForm } from './checkout/useCheckoutForm';
 import { buildOrderPayload, submitOrderToN8n } from '../services/orderApi';
+import { pushOrder } from '../services/orderBridge';
 import { getWhatsAppSession } from '../services/whatsapp';
 
 interface Props {
@@ -104,6 +105,8 @@ export default function CheckoutSheet({ restaurant }: Props) {
     const result = await submitOrderToN8n(payload);
 
     if (result.success) {
+      // Push order to the restaurant dashboard via shared bridge
+      pushOrder(payload);
       setSubmitState('success');
     } else {
       setSubmitState('error');

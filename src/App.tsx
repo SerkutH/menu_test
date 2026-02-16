@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { restaurant, categories } from './data';
-import { MenuItem } from './types';
+import { restaurant as fallbackRestaurant, categories as fallbackCategories } from './data';
+import { MenuItem, Restaurant, Category } from './types';
+import { getPublishedRestaurant, getPublishedCategories, subscribeToMenuChanges } from './services/menuBridge';
 import { useCartStore } from './store/cartStore';
 import RestaurantHeader from './components/RestaurantHeader';
 import CategoryNav from './components/CategoryNav';
@@ -12,7 +13,18 @@ import CartSheet from './components/CartSheet';
 import CheckoutSheet from './components/CheckoutSheet';
 import ClosedBanner from './components/ClosedBanner';
 
+function loadMenuData(): { restaurant: Restaurant; categories: Category[] } {
+  const pubRestaurant = getPublishedRestaurant();
+  const pubCategories = getPublishedCategories();
+
+  return {
+    restaurant: pubRestaurant || fallbackRestaurant,
+    categories: pubCategories && pubCategories.length > 0 ? pubCategories : fallbackCategories,
+  };
+}
+
 function App() {
+  const [{ restaurant, categories }, setMenuData] = useState(loadMenuData);
   const [activeCategory, setActiveCategory] = useState(categories[0]?.id || '');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
@@ -24,6 +36,15 @@ function App() {
   const isCheckoutOpen = useCartStore((s) => s.isCheckoutOpen);
   const staleCartNotice = useCartStore((s) => s.staleCartNotice);
   const dismissStaleNotice = useCartStore((s) => s.dismissStaleNotice);
+
+  // Subscribe to live menu changes from the dashboard
+  useEffect(() => {
+    const unsubscribe = subscribeToMenuChanges(() => {
+      const updated = loadMenuData();
+      setMenuData(updated);
+    });
+    return unsubscribe;
+  }, []);
 
   // Handle scroll to detect active category and sticky nav
   const handleScroll = useCallback(() => {
@@ -49,7 +70,7 @@ function App() {
     }
 
     setActiveCategory(currentCategory);
-  }, [searchQuery]);
+  }, [searchQuery, categories]);
 
   useEffect(() => {
     window.addEventListener('scroll', handleScroll, { passive: true });

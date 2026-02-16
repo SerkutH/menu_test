@@ -32,7 +32,7 @@ export interface MenuItem {
   modifierGroups: ModifierGroup[];
 }
 
-export type DietaryTag = 'vegan' | 'spicy' | 'gluten-free';
+export type DietaryTag = string;
 
 export type ModifierGroup = RemovalGroup | SingleSelectGroup | MultiSelectGroup;
 

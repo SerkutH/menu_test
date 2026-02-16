@@ -13,6 +13,8 @@ const tagConfig: Record<string, { emoji: string; label: string }> = {
   vegan: { emoji: '🌱', label: 'Vegan' },
   spicy: { emoji: '🌶', label: 'Spicy' },
   'gluten-free': { emoji: '🌾', label: 'GF' },
+  'Acılı': { emoji: '🌶', label: 'Acılı' },
+  'Vejetaryen': { emoji: '🌱', label: 'Vejetaryen' },
 };
 
 export default function MenuSection({ item, onItemClick, isOpen }: Props) {
@@ -73,15 +75,18 @@ export default function MenuSection({ item, onItemClick, isOpen }: Props) {
         {/* Tags */}
         {item.tags.length > 0 && !item.soldOut && (
           <div className="absolute top-2 left-2 flex gap-1">
-            {item.tags.map((tag) => (
-              <span
-                key={tag}
-                className="bg-white/90 backdrop-blur-sm text-xs px-1.5 py-0.5 rounded-md shadow-sm"
-                title={tagConfig[tag]?.label}
-              >
-                {tagConfig[tag]?.emoji}
-              </span>
-            ))}
+            {item.tags.map((tag) => {
+              const config = tagConfig[tag];
+              return (
+                <span
+                  key={tag}
+                  className="bg-white/90 backdrop-blur-sm text-xs px-1.5 py-0.5 rounded-md shadow-sm"
+                  title={config?.label || tag}
+                >
+                  {config?.emoji || '🏷'}
+                </span>
+              );
+            })}
           </div>
         )}
 

@@ -257,16 +257,19 @@ export default function ItemDetailSheet({ item, isOpen, onClose }: Props) {
             {/* Tags */}
             {item.tags.length > 0 && (
               <div className="flex gap-2 mt-3">
-                {item.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600"
-                  >
-                    {tag === 'vegan' && '🌱 Vegan'}
-                    {tag === 'spicy' && '🌶 Spicy'}
-                    {tag === 'gluten-free' && '🌾 Gluten-Free'}
-                  </span>
-                ))}
+                {item.tags.map((tag) => {
+                  const emojiMap: Record<string, string> = {
+                    vegan: '🌱', spicy: '🌶', 'gluten-free': '🌾', 'Acılı': '🌶', 'Vejetaryen': '🌱',
+                  };
+                  return (
+                    <span
+                      key={tag}
+                      className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600"
+                    >
+                      {emojiMap[tag] ? `${emojiMap[tag]} ` : ''}{tag}
+                    </span>
+                  );
+                })}
               </div>
             )}
 
