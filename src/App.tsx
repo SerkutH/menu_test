@@ -37,14 +37,37 @@ function App() {
   const staleCartNotice = useCartStore((s) => s.staleCartNotice);
   const dismissStaleNotice = useCartStore((s) => s.dismissStaleNotice);
 
-  // Subscribe to live menu changes from the dashboard
-  useEffect(() => {
-    const unsubscribe = subscribeToMenuChanges(() => {
-      const updated = loadMenuData();
-      setMenuData(updated);
-    });
-    return unsubscribe;
+  // Keep menu in sync with dashboard — multiple strategies for reliability
+  const refreshMenu = useCallback(() => {
+    setMenuData(loadMenuData());
   }, []);
+
+  useEffect(() => {
+    // 1. BroadcastChannel: fires when dashboard saves in another tab
+    const unsubBroadcast = subscribeToMenuChanges(refreshMenu);
+
+    // 2. storage event: fires when localStorage changes from another tab
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'dashboard_menu' || e.key === 'dashboard_settings') {
+        refreshMenu();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+
+    // 3. visibilitychange + focus: re-read when user switches back to this tab
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshMenu();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', refreshMenu);
+
+    return () => {
+      unsubBroadcast();
+      window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', refreshMenu);
+    };
+  }, [refreshMenu]);
 
   // Handle scroll to detect active category and sticky nav
   const handleScroll = useCallback(() => {
