@@ -105,8 +105,12 @@ export default function CheckoutSheet({ restaurant }: Props) {
     const result = await submitOrderToN8n(payload);
 
     if (result.success) {
-      // Push order to the restaurant dashboard via shared bridge
-      pushOrder(payload);
+      // Push order to the restaurant dashboard via Firebase
+      try {
+        await pushOrder(payload);
+      } catch (err) {
+        console.error('[checkout] Failed to push order to dashboard:', err);
+      }
       setSubmitState('success');
     } else {
       setSubmitState('error');

@@ -7,33 +7,16 @@ import {
   DashboardModifierOption,
   MenuStatus,
 } from '../types';
+import { dbSet, dbOnValue } from '../../services/firebase';
 
 function uid(): string {
   return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
 }
 
-// ── Persistence ──────────────────────────────────────────────────────────────
-
-const MENU_STORAGE_KEY = 'dashboard_menu';
-const MENU_CHANNEL = 'menu_sync';
+// ── Firebase persistence ─────────────────────────────────────────────────────
 
 function saveMenu(menu: DashboardMenu): void {
-  try {
-    localStorage.setItem(MENU_STORAGE_KEY, JSON.stringify(menu));
-    const ch = new BroadcastChannel(MENU_CHANNEL);
-    ch.postMessage({ type: 'MENU_UPDATED' });
-    ch.close();
-  } catch { /* storage unavailable */ }
-}
-
-function loadMenu(): DashboardMenu | null {
-  try {
-    const raw = localStorage.getItem(MENU_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as DashboardMenu;
-  } catch {
-    return null;
-  }
+  dbSet('menu', menu).catch((err) => console.error('[menuStore] Firebase save error:', err));
 }
 
 // ── Default data (used only on very first launch) ────────────────────────────
@@ -244,11 +227,16 @@ const defaultMenu: DashboardMenu = {
 
 interface MenuStore {
   menu: DashboardMenu;
+  isLoading: boolean;
   editingItem: DashboardMenuItem | null;
   editingCategoryId: string | null;
   isProductModalOpen: boolean;
   editingCategory: DashboardCategory | null;
   isCategoryModalOpen: boolean;
+
+  // Firebase hydration
+  hydrateFromFirebase: () => () => void;
+  setMenu: (menu: DashboardMenu) => void;
 
   // Menu status
   setMenuStatus: (status: MenuStatus) => void;
@@ -296,21 +284,49 @@ function findItemInMenu(menu: DashboardMenu, itemId: string): { category: Dashbo
   return null;
 }
 
-const initialMenu = loadMenu() || defaultMenu;
-
-// Save initial default if nothing was persisted yet
-if (!loadMenu()) saveMenu(defaultMenu);
-
 export const useMenuStore = create<MenuStore>((set, get) => ({
-  menu: initialMenu,
+  menu: defaultMenu,
+  isLoading: true,
   editingItem: null,
   editingCategoryId: null,
   isProductModalOpen: false,
   editingCategory: null,
   isCategoryModalOpen: false,
 
+  hydrateFromFirebase: () => {
+    return dbOnValue<DashboardMenu>('menu', (data) => {
+      if (data) {
+        // Ensure categories have items arrays (Firebase strips empty arrays)
+        const menu: DashboardMenu = {
+          ...data,
+          categories: (data.categories || []).map((cat) => ({
+            ...cat,
+            items: (cat.items || []).map((item) => ({
+              ...item,
+              modifierGroups: (item.modifierGroups || []).map((mg) => ({
+                ...mg,
+                options: mg.options || [],
+              })),
+            })),
+          })),
+        };
+        set({ menu, isLoading: false });
+      } else {
+        // First time — push default menu to Firebase
+        saveMenu(defaultMenu);
+        set({ menu: defaultMenu, isLoading: false });
+      }
+    });
+  },
+
+  setMenu: (menu) => set({ menu }),
+
   setMenuStatus: (status) =>
-    set((state) => ({ menu: { ...state.menu, status } })),
+    set((state) => {
+      const updated = { ...state.menu, status };
+      saveMenu(updated);
+      return { menu: updated };
+    }),
 
   // ── Category ─────────────────────────────────────────────────────────────
   addCategory: (name, description) =>
@@ -323,31 +339,35 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
         displayOrder: state.menu.categories.length,
         items: [],
       };
-      return {
-        menu: {
-          ...state.menu,
-          categories: [...state.menu.categories, newCat],
-        },
+      const updated = {
+        ...state.menu,
+        categories: [...state.menu.categories, newCat],
       };
+      saveMenu(updated);
+      return { menu: updated };
     }),
 
   updateCategory: (id, updates) =>
-    set((state) => ({
-      menu: {
+    set((state) => {
+      const updated = {
         ...state.menu,
         categories: state.menu.categories.map((c) =>
           c.id === id ? { ...c, ...updates } : c
         ),
-      },
-    })),
+      };
+      saveMenu(updated);
+      return { menu: updated };
+    }),
 
   deleteCategory: (id) =>
-    set((state) => ({
-      menu: {
+    set((state) => {
+      const updated = {
         ...state.menu,
         categories: state.menu.categories.filter((c) => c.id !== id),
-      },
-    })),
+      };
+      saveMenu(updated);
+      return { menu: updated };
+    }),
 
   duplicateCategory: (id) =>
     set((state) => {
@@ -368,12 +388,12 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
           })),
         })),
       };
-      return {
-        menu: {
-          ...state.menu,
-          categories: [...state.menu.categories, newCat],
-        },
+      const updated = {
+        ...state.menu,
+        categories: [...state.menu.categories, newCat],
       };
+      saveMenu(updated);
+      return { menu: updated };
     }),
 
   reorderCategories: (fromIndex, toIndex) =>
@@ -381,7 +401,9 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
       const cats = [...state.menu.categories];
       const [moved] = cats.splice(fromIndex, 1);
       cats.splice(toIndex, 0, moved);
-      return { menu: { ...state.menu, categories: cats.map((c, i) => ({ ...c, displayOrder: i })) } };
+      const updated = { ...state.menu, categories: cats.map((c, i) => ({ ...c, displayOrder: i })) };
+      saveMenu(updated);
+      return { menu: updated };
     }),
 
   // ── Item ──────────────────────────────────────────────────────────────────
@@ -404,8 +426,10 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
       };
       const newCategories = [...state.menu.categories];
       newCategories[catIndex] = { ...cat, items: [...cat.items, newItem] };
+      const updated = { ...state.menu, categories: newCategories };
+      saveMenu(updated);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updated,
         editingItem: newItem,
         editingCategoryId: categoryId,
         isProductModalOpen: true,
@@ -420,24 +444,28 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
           item.id === itemId ? { ...item, ...updates } : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: state.editingItem?.id === itemId && found ? found.item : state.editingItem,
       };
     }),
 
   deleteItem: (categoryId, itemId) =>
-    set((state) => ({
-      menu: {
+    set((state) => {
+      const updated = {
         ...state.menu,
         categories: state.menu.categories.map((cat) =>
           cat.id === categoryId
             ? { ...cat, items: cat.items.filter((i) => i.id !== itemId) }
             : cat
         ),
-      },
-    })),
+      };
+      saveMenu(updated);
+      return { menu: updated };
+    }),
 
   duplicateItem: (categoryId, itemId) =>
     set((state) => {
@@ -456,19 +484,19 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
           options: mg.options.map((opt) => ({ ...opt, id: uid() })),
         })),
       };
-      return {
-        menu: {
-          ...state.menu,
-          categories: state.menu.categories.map((c) =>
-            c.id === categoryId ? { ...c, items: [...c.items, newItem] } : c
-          ),
-        },
+      const updated = {
+        ...state.menu,
+        categories: state.menu.categories.map((c) =>
+          c.id === categoryId ? { ...c, items: [...c.items, newItem] } : c
+        ),
       };
+      saveMenu(updated);
+      return { menu: updated };
     }),
 
   toggleItemStock: (categoryId, itemId) =>
-    set((state) => ({
-      menu: {
+    set((state) => {
+      const updated = {
         ...state.menu,
         categories: state.menu.categories.map((cat) =>
           cat.id === categoryId
@@ -482,8 +510,10 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
               }
             : cat
         ),
-      },
-    })),
+      };
+      saveMenu(updated);
+      return { menu: updated };
+    }),
 
   // ── Modifier Groups ────────────────────────────────────────────────────────
   addModifierGroup: (itemId, group) =>
@@ -497,13 +527,14 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
         ...cat,
         items: cat.items.map((item) => {
           if (item.id !== itemId) return item;
-          const updated = { ...item, modifierGroups: [...item.modifierGroups, { ...newGroup, displayOrder: item.modifierGroups.length }] };
-          return updated;
+          return { ...item, modifierGroups: [...item.modifierGroups, { ...newGroup, displayOrder: item.modifierGroups.length }] };
         }),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -523,9 +554,11 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
             : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -540,9 +573,11 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
             : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -564,9 +599,11 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
             : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -588,9 +625,11 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
             : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -612,9 +651,11 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
             : item
         ),
       }));
-      const found = findItemInMenu({ ...state.menu, categories: newCategories }, itemId);
+      const updatedMenu = { ...state.menu, categories: newCategories };
+      const found = findItemInMenu(updatedMenu, itemId);
+      saveMenu(updatedMenu);
       return {
-        menu: { ...state.menu, categories: newCategories },
+        menu: updatedMenu,
         editingItem: found ? found.item : state.editingItem,
       };
     }),
@@ -632,10 +673,3 @@ export const useMenuStore = create<MenuStore>((set, get) => ({
   closeCategoryModal: () =>
     set({ editingCategory: null, isCategoryModalOpen: false }),
 }));
-
-// Auto-persist menu to localStorage on every change
-useMenuStore.subscribe((state, prevState) => {
-  if (state.menu !== prevState.menu) {
-    saveMenu(state.menu);
-  }
-});

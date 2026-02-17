@@ -1,11 +1,12 @@
 /**
  * Order Bridge — shared communication layer between customer app and restaurant dashboard.
  *
- * Uses localStorage for persistence and BroadcastChannel for real-time
- * cross-tab communication (customer tab → dashboard tab).
+ * Uses Firebase Realtime Database for persistence and real-time
+ * cross-device communication (customer → dashboard).
  */
 
 import { OrderPayload } from './orderApi';
+import { dbSet, dbGet, dbOnValue } from './firebase';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,68 +48,43 @@ export interface RestaurantOrder {
   note: string;
 }
 
-type BridgeMessage =
-  | { type: 'NEW_ORDER'; order: RestaurantOrder }
-  | { type: 'ORDER_STATUS_UPDATE'; orderId: string; status: OrderStatus };
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const STORAGE_KEY = 'restaurant_orders';
-const CHANNEL_NAME = 'order_bridge';
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-let orderCounter = parseInt(localStorage.getItem('order_counter') || '0', 10);
-
-function nextOrderNumber(): string {
-  orderCounter += 1;
-  localStorage.setItem('order_counter', String(orderCounter));
-  return '#' + String(orderCounter).padStart(4, '0');
-}
 
 function uid(): string {
   return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
 }
 
-function getChannel(): BroadcastChannel | null {
-  try {
-    return new BroadcastChannel(CHANNEL_NAME);
-  } catch {
-    return null;
-  }
+async function getNextOrderNumber(): Promise<string> {
+  const counter = (await dbGet<number>('orderCounter')) || 0;
+  const next = counter + 1;
+  await dbSet('orderCounter', next);
+  return '#' + String(next).padStart(4, '0');
 }
 
 // ── Read / Write ─────────────────────────────────────────────────────────────
 
-export function getAllOrders(): RestaurantOrder[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as RestaurantOrder[];
-  } catch {
-    return [];
-  }
-}
-
-function saveAllOrders(orders: RestaurantOrder[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders));
-  } catch {
-    // storage full or unavailable
-  }
+export async function getAllOrders(): Promise<RestaurantOrder[]> {
+  const data = await dbGet<Record<string, RestaurantOrder>>('orders');
+  if (!data) return [];
+  return Object.values(data).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Called by the customer app after a successful order submission.
- * Converts the OrderPayload into a RestaurantOrder, persists it,
- * and broadcasts to the dashboard tab.
+ * Converts the OrderPayload into a RestaurantOrder, persists it to Firebase,
+ * and the dashboard receives it in real-time via onValue listener.
  */
-export function pushOrder(payload: OrderPayload): RestaurantOrder {
+export async function pushOrder(payload: OrderPayload): Promise<RestaurantOrder> {
+  const orderNumber = await getNextOrderNumber();
+  const orderId = payload.idempotencyKey || uid();
+
   const order: RestaurantOrder = {
-    id: payload.idempotencyKey || uid(),
-    orderNumber: nextOrderNumber(),
+    id: orderId,
+    orderNumber,
     status: 'new',
     createdAt: payload.createdAt,
     customer: {
@@ -140,60 +116,52 @@ export function pushOrder(payload: OrderPayload): RestaurantOrder {
     note: '',
   };
 
-  const orders = getAllOrders();
-  orders.unshift(order);
-  saveAllOrders(orders);
-
-  // Broadcast to dashboard
-  const ch = getChannel();
-  if (ch) {
-    ch.postMessage({ type: 'NEW_ORDER', order } satisfies BridgeMessage);
-    ch.close();
-  }
-
+  await dbSet(`orders/${orderId}`, order);
   return order;
 }
 
 /**
  * Called by the dashboard to update an order's status.
- * Persists and broadcasts back (in case multiple dashboard tabs).
+ * Firebase listeners on both sides pick up the change in real-time.
  */
-export function updateOrderStatus(orderId: string, status: OrderStatus): void {
-  const orders = getAllOrders();
-  const idx = orders.findIndex((o) => o.id === orderId);
-  if (idx === -1) return;
-  orders[idx] = { ...orders[idx], status };
-  saveAllOrders(orders);
-
-  const ch = getChannel();
-  if (ch) {
-    ch.postMessage({ type: 'ORDER_STATUS_UPDATE', orderId, status } satisfies BridgeMessage);
-    ch.close();
-  }
+export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+  await dbSet(`orders/${orderId}/status`, status);
 }
 
 /**
- * Subscribe to real-time order events from other tabs.
+ * Subscribe to real-time order changes from Firebase.
  * Returns an unsubscribe function.
+ */
+export function subscribeToOrders(
+  onOrdersChanged: (orders: RestaurantOrder[]) => void
+): () => void {
+  return dbOnValue<Record<string, RestaurantOrder>>('orders', (data) => {
+    if (!data) {
+      onOrdersChanged([]);
+      return;
+    }
+    const orders = Object.values(data).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    onOrdersChanged(orders);
+  });
+}
+
+/**
+ * @deprecated — kept for backwards compatibility
  */
 export function subscribeToBridge(
   onNewOrder: (order: RestaurantOrder) => void,
-  onStatusUpdate: (orderId: string, status: OrderStatus) => void
+  _onStatusUpdate: (orderId: string, status: OrderStatus) => void
 ): () => void {
-  const ch = getChannel();
-  if (!ch) return () => {};
+  let previousOrderIds = new Set<string>();
 
-  const handler = (event: MessageEvent<BridgeMessage>) => {
-    if (event.data.type === 'NEW_ORDER') {
-      onNewOrder(event.data.order);
-    } else if (event.data.type === 'ORDER_STATUS_UPDATE') {
-      onStatusUpdate(event.data.orderId, event.data.status);
+  return subscribeToOrders((orders) => {
+    for (const order of orders) {
+      if (!previousOrderIds.has(order.id)) {
+        onNewOrder(order);
+      }
     }
-  };
-
-  ch.addEventListener('message', handler);
-  return () => {
-    ch.removeEventListener('message', handler);
-    ch.close();
-  };
+    previousOrderIds = new Set(orders.map((o) => o.id));
+  });
 }

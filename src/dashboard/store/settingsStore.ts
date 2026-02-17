@@ -1,28 +1,11 @@
 import { create } from 'zustand';
 import { RestaurantSettings, WorkingHours, RestaurantProfile, DeliverySettings } from '../types';
+import { dbSet, dbOnValue } from '../../services/firebase';
 
-// ── Persistence ──────────────────────────────────────────────────────────────
-
-const SETTINGS_STORAGE_KEY = 'dashboard_settings';
-const SETTINGS_CHANNEL = 'settings_sync';
+// ── Firebase persistence ─────────────────────────────────────────────────────
 
 function saveSettings(settings: RestaurantSettings): void {
-  try {
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    const ch = new BroadcastChannel(SETTINGS_CHANNEL);
-    ch.postMessage({ type: 'SETTINGS_UPDATED' });
-    ch.close();
-  } catch { /* storage unavailable */ }
-}
-
-function loadSettings(): RestaurantSettings | null {
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as RestaurantSettings;
-  } catch {
-    return null;
-  }
+  dbSet('settings', settings).catch((err) => console.error('[settingsStore] Firebase save error:', err));
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -62,14 +45,14 @@ const defaultSettings: RestaurantSettings = {
   notificationPhone: '+90 532 123 45 67',
 };
 
-const initialSettings = loadSettings() || defaultSettings;
-if (!loadSettings()) saveSettings(defaultSettings);
-
 // ── Store ────────────────────────────────────────────────────────────────────
 
 interface SettingsStore {
   settings: RestaurantSettings;
+  isLoading: boolean;
   isDirty: boolean;
+
+  hydrateFromFirebase: () => () => void;
 
   updateProfile: (updates: Partial<RestaurantProfile>) => void;
   updateWorkingHours: (dayKey: string, updates: Partial<WorkingHours>) => void;
@@ -81,58 +64,71 @@ interface SettingsStore {
 }
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
-  settings: initialSettings,
+  settings: defaultSettings,
+  isLoading: true,
   isDirty: false,
 
+  hydrateFromFirebase: () => {
+    return dbOnValue<RestaurantSettings>('settings', (data) => {
+      if (data) {
+        set({ settings: data, isLoading: false });
+      } else {
+        saveSettings(defaultSettings);
+        set({ settings: defaultSettings, isLoading: false });
+      }
+    });
+  },
+
   updateProfile: (updates) =>
-    set((state) => ({
-      settings: {
+    set((state) => {
+      const updated = {
         ...state.settings,
         profile: { ...state.settings.profile, ...updates },
-      },
-      isDirty: true,
-    })),
+      };
+      saveSettings(updated);
+      return { settings: updated, isDirty: true };
+    }),
 
   updateWorkingHours: (dayKey, updates) =>
-    set((state) => ({
-      settings: {
+    set((state) => {
+      const updated = {
         ...state.settings,
         workingHours: state.settings.workingHours.map((wh) =>
           wh.dayKey === dayKey ? { ...wh, ...updates } : wh
         ),
-      },
-      isDirty: true,
-    })),
+      };
+      saveSettings(updated);
+      return { settings: updated, isDirty: true };
+    }),
 
   updateDelivery: (updates) =>
-    set((state) => ({
-      settings: {
+    set((state) => {
+      const updated = {
         ...state.settings,
         delivery: { ...state.settings.delivery, ...updates },
-      },
-      isDirty: true,
-    })),
+      };
+      saveSettings(updated);
+      return { settings: updated, isDirty: true };
+    }),
 
   setOrderAcceptMode: (mode) =>
-    set((state) => ({
-      settings: { ...state.settings, orderAcceptMode: mode },
-      isDirty: true,
-    })),
+    set((state) => {
+      const updated = { ...state.settings, orderAcceptMode: mode };
+      saveSettings(updated);
+      return { settings: updated, isDirty: true };
+    }),
 
   setNotificationPhone: (phone) =>
-    set((state) => ({
-      settings: { ...state.settings, notificationPhone: phone },
-      isDirty: true,
-    })),
+    set((state) => {
+      const updated = { ...state.settings, notificationPhone: phone };
+      saveSettings(updated);
+      return { settings: updated, isDirty: true };
+    }),
 
   saveSettings: () => set({ isDirty: false }),
 
-  resetSettings: () => set({ settings: defaultSettings, isDirty: false }),
+  resetSettings: () => {
+    saveSettings(defaultSettings);
+    set({ settings: defaultSettings, isDirty: false });
+  },
 }));
-
-// Auto-persist settings to localStorage on every change
-useSettingsStore.subscribe((state, prevState) => {
-  if (state.settings !== prevState.settings) {
-    saveSettings(state.settings);
-  }
-});

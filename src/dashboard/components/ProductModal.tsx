@@ -1,14 +1,63 @@
-import { useState } from 'react';
-import { X, Plus, Pencil, Trash2, Upload } from 'lucide-react';
+import { useState, useRef, useCallback } from 'react';
+import { X, Plus, Pencil, Trash2, Upload, Image, Link, AlertCircle } from 'lucide-react';
 import { useMenuStore } from '../store/menuStore';
 import { DashboardModifierGroup, DashboardModifierOption } from '../types';
 
 type Tab = 'basic' | 'modifiers' | 'availability';
 
+interface ValidationErrors {
+  name?: string;
+  basePrice?: string;
+  description?: string;
+}
+
+function validate(item: { name: string; basePrice: number; description: string }): ValidationErrors {
+  const errors: ValidationErrors = {};
+  if (!item.name.trim() || item.name.trim() === 'Yeni Ürün') {
+    errors.name = 'Ürün adı zorunludur';
+  }
+  if (!item.basePrice || item.basePrice <= 0) {
+    errors.basePrice = 'Fiyat 0\'dan büyük olmalıdır';
+  }
+  if (!item.description.trim()) {
+    errors.description = 'Açıklama zorunludur';
+  }
+  return errors;
+}
+
+function resizeImage(file: File, maxWidth: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let { width, height } = img;
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('Canvas not supported')); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = reject;
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ProductModal() {
   const item = useMenuStore((s) => s.editingItem);
+  const editingCategoryId = useMenuStore((s) => s.editingCategoryId);
   const closeProductModal = useMenuStore((s) => s.closeProductModal);
   const updateItem = useMenuStore((s) => s.updateItem);
+  const deleteItem = useMenuStore((s) => s.deleteItem);
   const addModifierGroup = useMenuStore((s) => s.addModifierGroup);
   const updateModifierGroup = useMenuStore((s) => s.updateModifierGroup);
   const deleteModifierGroup = useMenuStore((s) => s.deleteModifierGroup);
@@ -24,8 +73,14 @@ export default function ProductModal() {
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [newOptionName, setNewOptionName] = useState('');
   const [newOptionPrice, setNewOptionPrice] = useState(0);
+  const [errors, setErrors] = useState<ValidationErrors>({});
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlValue, setUrlValue] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!item) return null;
+
+  const isNewItem = item.name === 'Yeni Ürün' && item.basePrice === 0;
 
   const tabs = [
     { key: 'basic' as const, label: 'Temel Bilgiler' },
@@ -37,6 +92,49 @@ export default function ProductModal() {
     single: 'Tek Seçim',
     multi: 'Çoklu Seçim',
     removal: 'Malzeme Çıkar',
+  };
+
+  const handleSave = () => {
+    const errs = validate(item);
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      setActiveTab('basic');
+      return;
+    }
+    closeProductModal();
+  };
+
+  const handleCancel = () => {
+    if (isNewItem && editingCategoryId) {
+      deleteItem(editingCategoryId, item.id);
+    }
+    closeProductModal();
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return;
+    try {
+      const dataUrl = await resizeImage(file, 800);
+      updateItem(item.id, { imageUrl: dataUrl });
+    } catch {
+      // silently fail
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleUrlSubmit = () => {
+    const url = urlValue.trim();
+    if (url) {
+      updateItem(item.id, { imageUrl: url });
+      setUrlValue('');
+      setShowUrlInput(false);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    updateItem(item.id, { imageUrl: '' });
   };
 
   const handleAddGroup = () => {
@@ -71,16 +169,18 @@ export default function ProductModal() {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40" onClick={closeProductModal} />
+      <div className="absolute inset-0 bg-black/40" onClick={handleCancel} />
 
       {/* Modal */}
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col mx-4">
         {/* Header */}
         <div className="px-6 pt-5 pb-0">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold text-gray-900">{item.name}</h2>
+            <h2 className="text-xl font-bold text-gray-900">
+              {isNewItem ? 'Yeni Ürün Ekle' : item.name}
+            </h2>
             <button
-              onClick={closeProductModal}
+              onClick={handleCancel}
               className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
             >
               <X size={20} />
@@ -110,35 +210,77 @@ export default function ProductModal() {
           {/* Basic Info Tab */}
           {activeTab === 'basic' && (
             <div className="space-y-5">
+              {/* Name */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Ürün Adı</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Ürün Adı <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="text"
-                  value={item.name}
-                  onChange={(e) => updateItem(item.id, { name: e.target.value })}
-                  className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300"
+                  value={item.name === 'Yeni Ürün' ? '' : item.name}
+                  placeholder="Ürün adını girin"
+                  onChange={(e) => {
+                    updateItem(item.id, { name: e.target.value || 'Yeni Ürün' });
+                    if (errors.name) setErrors((prev) => ({ ...prev, name: undefined }));
+                  }}
+                  className={`w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 ${
+                    errors.name ? 'border-red-300 bg-red-50/50' : 'border-gray-200'
+                  }`}
                 />
+                {errors.name && (
+                  <p className="flex items-center gap-1 text-xs text-red-500 mt-1">
+                    <AlertCircle size={12} /> {errors.name}
+                  </p>
+                )}
               </div>
 
+              {/* Description */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Açıklama</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Açıklama <span className="text-red-500">*</span>
+                </label>
                 <textarea
                   value={item.description}
-                  onChange={(e) => updateItem(item.id, { description: e.target.value })}
+                  placeholder="Ürün açıklamasını girin"
+                  onChange={(e) => {
+                    updateItem(item.id, { description: e.target.value });
+                    if (errors.description) setErrors((prev) => ({ ...prev, description: undefined }));
+                  }}
                   rows={3}
-                  className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 resize-y"
+                  className={`w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 resize-y ${
+                    errors.description ? 'border-red-300 bg-red-50/50' : 'border-gray-200'
+                  }`}
                 />
+                {errors.description && (
+                  <p className="flex items-center gap-1 text-xs text-red-500 mt-1">
+                    <AlertCircle size={12} /> {errors.description}
+                  </p>
+                )}
               </div>
 
+              {/* Price + Tax */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Fiyat (₺)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Fiyat (₺) <span className="text-red-500">*</span>
+                  </label>
                   <input
                     type="number"
-                    value={item.basePrice}
-                    onChange={(e) => updateItem(item.id, { basePrice: Number(e.target.value) })}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300"
+                    value={item.basePrice || ''}
+                    placeholder="0"
+                    onChange={(e) => {
+                      updateItem(item.id, { basePrice: Number(e.target.value) });
+                      if (errors.basePrice) setErrors((prev) => ({ ...prev, basePrice: undefined }));
+                    }}
+                    className={`w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-300 ${
+                      errors.basePrice ? 'border-red-300 bg-red-50/50' : 'border-gray-200'
+                    }`}
                   />
+                  {errors.basePrice && (
+                    <p className="flex items-center gap-1 text-xs text-red-500 mt-1">
+                      <AlertCircle size={12} /> {errors.basePrice}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">KDV Oranı (%)</label>
@@ -151,6 +293,7 @@ export default function ProductModal() {
                 </div>
               </div>
 
+              {/* Tags */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Etiketler</label>
                 <input
@@ -170,12 +313,84 @@ export default function ProductModal() {
                 <p className="text-xs text-gray-400 mt-1">Virgülle ayırarak birden fazla etiket ekleyebilirsiniz</p>
               </div>
 
+              {/* Image Upload */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Ürün Görseli</label>
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center hover:border-gray-300 transition-colors cursor-pointer">
-                  <Upload size={24} className="mx-auto text-gray-300 mb-2" />
-                  <p className="text-sm text-gray-400">Görsel yüklemek için tıklayın</p>
-                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+
+                {item.imageUrl ? (
+                  <div className="relative rounded-xl overflow-hidden border border-gray-200">
+                    <img
+                      src={item.imageUrl}
+                      alt={item.name}
+                      className="w-full h-48 object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/0 hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 hover:opacity-100">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-3 py-1.5 bg-white rounded-lg text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+                      >
+                        Değiştir
+                      </button>
+                      <button
+                        onClick={handleRemoveImage}
+                        className="px-3 py-1.5 bg-red-500 rounded-lg text-sm font-medium text-white shadow-sm hover:bg-red-600"
+                      >
+                        Kaldır
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:border-gray-300 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                    >
+                      <Upload size={24} className="mx-auto text-gray-300 mb-2" />
+                      <p className="text-sm text-gray-500 font-medium">Görsel yüklemek için tıklayın</p>
+                      <p className="text-xs text-gray-400 mt-1">JPG, PNG — max 5MB</p>
+                    </button>
+
+                    {!showUrlInput ? (
+                      <button
+                        onClick={() => setShowUrlInput(true)}
+                        className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <Link size={12} />
+                        veya URL ile ekle
+                      </button>
+                    ) : (
+                      <div className="flex gap-2">
+                        <input
+                          type="url"
+                          value={urlValue}
+                          onChange={(e) => setUrlValue(e.target.value)}
+                          placeholder="https://example.com/image.jpg"
+                          className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-1 focus:ring-slate-300"
+                          onKeyDown={(e) => e.key === 'Enter' && handleUrlSubmit()}
+                        />
+                        <button
+                          onClick={handleUrlSubmit}
+                          className="px-3 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors"
+                        >
+                          Ekle
+                        </button>
+                        <button
+                          onClick={() => { setShowUrlInput(false); setUrlValue(''); }}
+                          className="px-3 py-2 text-gray-500 text-sm hover:bg-gray-100 rounded-lg transition-colors"
+                        >
+                          İptal
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -315,13 +530,30 @@ export default function ProductModal() {
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-          <button
-            onClick={closeProductModal}
-            className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-          >
-            Kapat
-          </button>
+        <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
+          {/* Validation hint */}
+          {Object.keys(errors).length > 0 && (
+            <p className="flex items-center gap-1.5 text-xs text-red-500">
+              <AlertCircle size={14} />
+              Lütfen zorunlu alanları doldurun
+            </p>
+          )}
+          {Object.keys(errors).length === 0 && <div />}
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleCancel}
+              className="px-4 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              {isNewItem ? 'Vazgeç' : 'İptal'}
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-5 py-2.5 rounded-lg text-sm font-medium bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+            >
+              Kaydet
+            </button>
+          </div>
         </div>
       </div>
     </div>

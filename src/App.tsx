@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { restaurant as fallbackRestaurant, categories as fallbackCategories } from './data';
 import { MenuItem, Restaurant, Category } from './types';
-import { getPublishedRestaurant, getPublishedCategories, subscribeToMenuChanges } from './services/menuBridge';
+import { getPublishedRestaurant, getPublishedCategories, startMenuListener, startSettingsListener } from './services/menuBridge';
 import { useCartStore } from './store/cartStore';
 import RestaurantHeader from './components/RestaurantHeader';
 import CategoryNav from './components/CategoryNav';
@@ -37,35 +37,18 @@ function App() {
   const staleCartNotice = useCartStore((s) => s.staleCartNotice);
   const dismissStaleNotice = useCartStore((s) => s.dismissStaleNotice);
 
-  // Keep menu in sync with dashboard — multiple strategies for reliability
   const refreshMenu = useCallback(() => {
     setMenuData(loadMenuData());
   }, []);
 
+  // Subscribe to Firebase real-time updates for menu and settings
   useEffect(() => {
-    // 1. BroadcastChannel: fires when dashboard saves in another tab
-    const unsubBroadcast = subscribeToMenuChanges(refreshMenu);
-
-    // 2. storage event: fires when localStorage changes from another tab
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'dashboard_menu' || e.key === 'dashboard_settings') {
-        refreshMenu();
-      }
-    };
-    window.addEventListener('storage', onStorage);
-
-    // 3. visibilitychange + focus: re-read when user switches back to this tab
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') refreshMenu();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', refreshMenu);
+    const unsubMenu = startMenuListener(refreshMenu);
+    const unsubSettings = startSettingsListener(refreshMenu);
 
     return () => {
-      unsubBroadcast();
-      window.removeEventListener('storage', onStorage);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', refreshMenu);
+      unsubMenu();
+      unsubSettings();
     };
   }, [refreshMenu]);
 

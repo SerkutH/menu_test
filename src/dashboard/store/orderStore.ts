@@ -1,8 +1,7 @@
 import { create } from 'zustand';
 import {
-  getAllOrders,
   updateOrderStatus as bridgeUpdateStatus,
-  subscribeToBridge,
+  subscribeToOrders,
   RestaurantOrder,
   OrderStatus,
 } from '../../services/orderBridge';
@@ -11,13 +10,11 @@ import {
 
 interface OrderStore {
   orders: RestaurantOrder[];
+  isLoading: boolean;
   selectedOrder: RestaurantOrder | null;
   statusFilter: OrderStatus | 'all';
 
-  // Hydrate from localStorage
-  loadOrders: () => void;
-
-  // Real-time bridge subscription
+  // Real-time Firebase subscription
   subscribe: () => () => void;
 
   setStatusFilter: (filter: OrderStatus | 'all') => void;
@@ -27,35 +24,22 @@ interface OrderStore {
 }
 
 export const useOrderStore = create<OrderStore>((set, get) => ({
-  orders: getAllOrders(),
+  orders: [],
+  isLoading: true,
   selectedOrder: null,
   statusFilter: 'all',
 
-  loadOrders: () => {
-    set({ orders: getAllOrders() });
-  },
-
   subscribe: () => {
-    return subscribeToBridge(
-      (order) => {
-        set((state) => {
-          // Prevent duplicates
-          if (state.orders.some((o) => o.id === order.id)) return state;
-          return { orders: [order, ...state.orders] };
-        });
-      },
-      (orderId, status) => {
-        set((state) => ({
-          orders: state.orders.map((o) =>
-            o.id === orderId ? { ...o, status } : o
-          ),
-          selectedOrder:
-            state.selectedOrder?.id === orderId
-              ? { ...state.selectedOrder, status }
-              : state.selectedOrder,
-        }));
-      }
-    );
+    return subscribeToOrders((orders) => {
+      const currentSelected = get().selectedOrder;
+      set({
+        orders,
+        isLoading: false,
+        selectedOrder: currentSelected
+          ? orders.find((o) => o.id === currentSelected.id) || null
+          : null,
+      });
+    });
   },
 
   setStatusFilter: (filter) => set({ statusFilter: filter }),

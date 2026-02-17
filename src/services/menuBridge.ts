@@ -1,8 +1,8 @@
 /**
- * Menu Bridge — reads the menu + settings written by the restaurant dashboard
+ * Menu Bridge — reads the menu + settings from Firebase Realtime Database
  * and converts them into the format the customer-facing app expects.
  *
- * Data flow:  Dashboard menuStore → localStorage → menuBridge → Customer App
+ * Data flow:  Dashboard menuStore → Firebase → menuBridge → Customer App
  */
 
 import type { Restaurant, Category, MenuItem, ModifierGroup, ModifierOption } from '../types';
@@ -13,34 +13,51 @@ import type {
   DashboardModifierGroup,
   RestaurantSettings,
 } from '../dashboard/types';
+import { dbOnValue } from './firebase';
 
-// ── Storage keys (must match the dashboard stores) ───────────────────────────
+// ── In-memory cache (populated by Firebase listeners) ─────────────────────────
 
-const MENU_STORAGE_KEY = 'dashboard_menu';
-const SETTINGS_STORAGE_KEY = 'dashboard_settings';
-const MENU_CHANNEL = 'menu_sync';
-const SETTINGS_CHANNEL = 'settings_sync';
+let cachedMenu: DashboardMenu | null = null;
+let cachedSettings: RestaurantSettings | null = null;
+let menuListenerActive = false;
+let settingsListenerActive = false;
 
-// ── Read raw data ────────────────────────────────────────────────────────────
+/**
+ * Start the Firebase listener for menu data.
+ * Should be called once at app startup.
+ */
+export function startMenuListener(onChange?: () => void): () => void {
+  if (menuListenerActive) return () => {};
+  menuListenerActive = true;
 
-function loadDashboardMenu(): DashboardMenu | null {
-  try {
-    const raw = localStorage.getItem(MENU_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  const unsub = dbOnValue<DashboardMenu>('menu', (data) => {
+    cachedMenu = data;
+    onChange?.();
+  });
+
+  return () => {
+    unsub();
+    menuListenerActive = false;
+  };
 }
 
-function loadDashboardSettings(): RestaurantSettings | null {
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+/**
+ * Start the Firebase listener for settings data.
+ * Should be called once at app startup.
+ */
+export function startSettingsListener(onChange?: () => void): () => void {
+  if (settingsListenerActive) return () => {};
+  settingsListenerActive = true;
+
+  const unsub = dbOnValue<RestaurantSettings>('settings', (data) => {
+    cachedSettings = data;
+    onChange?.();
+  });
+
+  return () => {
+    unsub();
+    settingsListenerActive = false;
+  };
 }
 
 // ── Conversion: Dashboard → Customer format ──────────────────────────────────
@@ -95,14 +112,14 @@ function convertItem(di: DashboardMenuItem): MenuItem {
     tags: di.tags as MenuItem['tags'],
     soldOut: di.stockStatus === 'sold_out',
     maxQuantity: 10,
-    modifierGroups: di.modifierGroups
+    modifierGroups: (di.modifierGroups || [])
       .sort((a, b) => a.displayOrder - b.displayOrder)
       .map(convertModifierGroup),
   };
 }
 
 function convertCategory(dc: DashboardCategory): Category {
-  const visibleItems = dc.items
+  const visibleItems = (dc.items || [])
     .filter((i) => i.stockStatus !== 'hidden')
     .sort((a, b) => a.displayOrder - b.displayOrder);
 
@@ -117,25 +134,25 @@ function convertCategory(dc: DashboardCategory): Category {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Returns the customer-facing menu categories.
+ * Returns the customer-facing menu categories from the Firebase cache.
  * Returns null if no dashboard menu has been configured yet.
  */
 export function getPublishedCategories(): Category[] | null {
-  const menu = loadDashboardMenu();
+  const menu = cachedMenu;
   if (!menu || menu.status !== 'live') return null;
 
-  return menu.categories
+  return (menu.categories || [])
     .sort((a, b) => a.displayOrder - b.displayOrder)
     .map(convertCategory)
     .filter((c) => c.items.length > 0);
 }
 
 /**
- * Returns the customer-facing restaurant info derived from dashboard settings.
+ * Returns the customer-facing restaurant info from the Firebase cache.
  * Returns null if no settings have been configured yet.
  */
 export function getPublishedRestaurant(): Restaurant | null {
-  const settings = loadDashboardSettings();
+  const settings = cachedSettings;
   if (!settings) return null;
 
   const now = new Date();
@@ -159,7 +176,6 @@ export function getPublishedRestaurant(): Restaurant | null {
   }
 
   if (!isOpen && !opensAt) {
-    // Find next opening time
     for (let i = 1; i <= 7; i++) {
       const nextDayIdx = (now.getDay() + i) % 7;
       const nextKey = dayKeys[nextDayIdx];
@@ -195,23 +211,8 @@ export function getPublishedRestaurant(): Restaurant | null {
 }
 
 /**
- * Subscribe to menu/settings changes from the dashboard.
- * Returns an unsubscribe function.
+ * @deprecated — kept for backwards compatibility. Use startMenuListener / startSettingsListener instead.
  */
-export function subscribeToMenuChanges(onChange: () => void): () => void {
-  const controllers: Array<() => void> = [];
-
-  try {
-    const menuCh = new BroadcastChannel(MENU_CHANNEL);
-    menuCh.addEventListener('message', onChange);
-    controllers.push(() => { menuCh.removeEventListener('message', onChange); menuCh.close(); });
-  } catch { /* BroadcastChannel unsupported */ }
-
-  try {
-    const settingsCh = new BroadcastChannel(SETTINGS_CHANNEL);
-    settingsCh.addEventListener('message', onChange);
-    controllers.push(() => { settingsCh.removeEventListener('message', onChange); settingsCh.close(); });
-  } catch { /* BroadcastChannel unsupported */ }
-
-  return () => controllers.forEach((unsub) => unsub());
+export function subscribeToMenuChanges(_onChange: () => void): () => void {
+  return () => {};
 }
